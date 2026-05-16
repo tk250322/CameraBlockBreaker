@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>VS BREAKOUT</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <!-- Firebase SDK (v8 compat) -->
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.11.0/firebase-database-compat.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; overflow: hidden; touch-action: none; }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        @keyframes pulse-fast {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.8; transform: scale(1.05); }
+        }
+        .fever-glow { animation: pulse-fast 0.5s infinite; filter: drop-shadow(0 0 10px rgba(255,50,50,0.8)); }
+        
+        @keyframes popup {
+            0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+            20% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+            80% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+            100% { transform: translate(-50%, -100%) scale(0.8); opacity: 0; }
+        }
+        .popup-anim { animation: popup 1.5s forwards; }
+        
+        .blink-red { animation: blink 1s infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    </style>
+</head>
+<body class="bg-slate-900 text-white flex flex-col h-screen select-none">
+    <!-- UI Header Area -->
+    <header class="h-24 bg-slate-800 shadow-xl flex items-center justify-between px-6 z-20 relative border-b border-slate-700 shrink-0">
+        <div class="flex flex-col items-start w-1/3">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="font-bold text-blue-400 text-xl tracking-wider">1P</span>
+                <div id="p1-score-display" class="text-3xl font-black text-blue-400 ml-2">0</div>
+            </div>
+            <div class="flex items-center gap-2 w-full max-w-[150px]">
+                <span class="text-xs text-gray-400 font-bold">FEVER</span>
+                <div class="h-2 w-full bg-slate-700 rounded-full overflow-hidden">
+                    <div id="p1-fever" class="h-full bg-blue-500 w-0 transition-all duration-300"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-center gap-6 absolute left-1/2 transform -translate-x-1/2 h-full">
+            <div class="flex flex-col items-center justify-center mt-2">
+                <div id="timer-display" class="text-5xl font-black text-white leading-none tracking-tighter drop-shadow-md">30</div>
+                <span class="text-[10px] text-gray-400 font-bold tracking-widest mt-1">TIME</span>
+            </div>
+            <div id="camera-area" class="opacity-0 transition-opacity duration-500 flex flex-col items-center">
+                <div class="relative rounded-lg overflow-hidden border-2 border-slate-600 shadow-lg" style="width: 80px; height: 60px;">
+                    <video id="input_video" class="w-full h-full object-cover transform -scale-x-100"></video>
+                    <div class="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full blink-red"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex flex-col items-end w-1/3">
+            <div class="flex items-center gap-2 mb-1">
+                <div id="p2-score-display" class="text-3xl font-black text-red-400 mr-2">0</div>
+                <span id="p2-name" class="font-bold text-red-400 text-xl tracking-wider">CPU</span>
+            </div>
+            <div class="flex items-center gap-2 w-full max-w-[150px] flex-row-reverse">
+                <span class="text-xs text-gray-400 font-bold">FEVER</span>
+                <div class="h-2 w-full bg-slate-700 rounded-full overflow-hidden flex justify-end">
+                    <div id="p2-fever" class="h-full bg-red-500 w-0 transition-all duration-300"></div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 relative bg-slate-900 overflow-hidden">
+        <canvas id="gameCanvas"></canvas>
+
+        <div id="fever-popup" class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-6xl font-black text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.9)] z-10 hidden italic tracking-tighter">
+            FEVER! x3
+        </div>
+
+        <div id="loading-camera-alert" class="absolute inset-0 bg-slate-900/80 flex flex-col items-center justify-center z-40 hidden backdrop-blur-sm">
+            <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+            <p id="camera-status-text" class="text-xl font-bold text-white">AIカメラを起動中...</p>
+            <p class="text-sm text-gray-400 mt-2">カメラへのアクセスを許可してください</p>
+        </div>
+
+        <div id="screen-start" class="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center z-30 backdrop-blur-sm overflow-y-auto py-8">
+            <h1 class="text-5xl md:text-7xl font-black italic mb-8 tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-blue-400 to-red-500 drop-shadow-2xl text-center">VS BREAKOUT</h1>
+            
+            <div class="flex flex-col gap-4 items-center w-full px-4">
+                <div class="flex flex-wrap justify-center gap-4">
+                    <button onclick="startGame('CPU')" class="px-8 py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white rounded-2xl font-bold text-xl shadow-lg shadow-blue-500/50 transform transition hover:scale-105 active:scale-95">1P vs CPU</button>
+                    <button onclick="startGame('2P')" class="px-8 py-4 bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-400 text-white rounded-2xl font-bold text-xl shadow-lg shadow-red-500/50 transform transition hover:scale-105 active:scale-95">1P vs 2P</button>
+                </div>
+                
+                <div class="flex flex-wrap justify-center gap-4 mt-2">
+                    <button onclick="startWithCamera('CPU')" class="px-6 py-3 bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400 text-white rounded-2xl font-bold text-lg shadow-lg shadow-purple-500/50 transform transition hover:scale-105 active:scale-95 flex flex-col items-center justify-center gap-1">
+                        <span class="flex items-center gap-2">📷 カメラ操作</span>
+                        <span class="text-xs font-normal opacity-80">(1P vs CPU)</span>
+                    </button>
+                    <button onclick="startWithCamera('2P')" class="px-6 py-3 bg-gradient-to-r from-pink-600 to-pink-500 hover:from-pink-500 hover:to-pink-400 text-white rounded-2xl font-bold text-lg shadow-lg shadow-pink-500/50 transform transition hover:scale-105 active:scale-95 flex flex-col items-center justify-center gap-1">
+                        <span class="flex items-center gap-2">📷 カメラ対戦</span>
+                        <span class="text-xs font-normal opacity-80">(1P vs 2P)</span>
+                    </button>
+                </div>
+
+                <div class="mt-4 p-5 border border-slate-700 rounded-2xl bg-slate-800/80 flex flex-col items-center w-full max-w-md shadow-2xl">
+                    <h3 class="text-white font-bold mb-3 flex items-center gap-2">
+                        <span class="text-green-400">🌐</span> オンライン対戦
+                    </h3>
+
+                    <div class="flex items-center gap-2 mb-4 w-full justify-center bg-slate-900/50 py-2 px-4 rounded-xl border border-slate-700">
+                        <input type="checkbox" id="online-camera-toggle" class="w-5 h-5 accent-purple-500 cursor-pointer">
+                        <label for="online-camera-toggle" class="text-white font-bold cursor-pointer select-none text-sm">📷 カメラ操作をオンにする</label>
+                    </div>
+
+                    <button onclick="createRoom()" class="w-full mb-3 px-6 py-3 bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 text-white rounded-xl font-bold shadow-lg transform transition hover:scale-105 active:scale-95">部屋を作る (1P)</button>
+                    
+                    <div class="flex w-full gap-2">
+                        <input type="text" id="room-id-input" placeholder="部屋ID(4桁)を入力" maxlength="4" class="flex-1 px-4 py-2 rounded-xl bg-slate-900 border border-slate-600 text-white font-mono text-center uppercase tracking-widest focus:outline-none focus:border-green-500">
+                        <button onclick="joinRoom()" class="px-6 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl font-bold shadow-lg transform transition hover:scale-105 active:scale-95">参加 (2P)</button>
+                    </div>
+                    <p id="firebase-error-text" class="text-red-400 text-xs mt-3 text-center hidden"></p>
+                </div>
+            </div>
+        </div>
+
+        <div id="room-waiting-alert" class="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center z-40 hidden backdrop-blur-md">
+            <div class="w-12 h-12 border-4 border-green-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+            <p class="text-2xl font-bold text-white mb-2">部屋を作成しました！</p>
+            <p class="text-gray-300">以下のIDを相手に伝えて参加してもらってください</p>
+            <div class="text-6xl font-mono font-black text-green-400 tracking-widest my-8 select-all p-6 bg-slate-800 rounded-2xl border-2 border-slate-600 shadow-2xl shadow-green-500/20" id="display-room-id">XXXX</div>
+            <p class="text-sm text-green-400 animate-pulse font-bold mb-8">2Pの参加を待っています...</p>
+            <button onclick="cancelRoom()" class="px-8 py-3 bg-slate-700 text-white rounded-xl font-bold hover:bg-slate-600 transition">キャンセル</button>
+        </div>
+
+        <div id="screen-gameover" class="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center z-30 hidden backdrop-blur-md">
+            <h2 id="winner-text" class="text-6xl md:text-7xl font-black italic mb-2 tracking-tighter drop-shadow-2xl text-center">WINNER!</h2>
+            <div class="flex gap-8 mt-6 mb-8 text-center bg-slate-800/80 p-6 rounded-2xl border border-slate-700">
+                <div class="flex flex-col gap-4">
+                    <div><p class="text-sm text-gray-400">1P SCORE</p><p id="stat-p1-score" class="text-3xl font-bold text-blue-400">0</p></div>
+                </div>
+                <div class="w-px bg-slate-600"></div>
+                <div class="flex flex-col gap-4">
+                    <div><p class="text-sm text-gray-400">2P SCORE</p><p id="stat-p2-score" class="text-3xl font-bold text-red-400">0</p></div>
+                </div>
+            </div>
+            <button onclick="resetGame()" class="px-8 py-4 bg-white text-slate-900 rounded-xl font-bold text-xl shadow-lg transform transition hover:scale-105 active:scale-95">タイトルに戻る</button>
+        </div>
+    </main>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const screens = {
+            start: document.getElementById('screen-start'),
+            gameOver: document.getElementById('screen-gameover')
+        };
+        const displays = {
+            p1Score: document.getElementById('p1-score-display'),
+            p2Score: document.getElementById('p2-score-display'),
+            timer: document.getElementById('timer-display'),
+            p1Fever: document.getElementById('p1-fever'),
+            p2Fever: document.getElementById('p2-fever'),
+            p2Name: document.getElementById('p2-name'),
+            winnerText: document.getElementById('winner-text'),
+            cameraArea: document.getElementById('camera-area'),
+            feverPopup: document.getElementById('fever-popup')
+        };
+
+        let STATE = 'START'; 
+        let gameMode = 'CPU';
+        let animationId;
+        
+        let p1, p2;
+        let balls = [];
+        let bricks = [];
+        
+        const PADDLE_WIDTH = 15;
+        const PADDLE_HEIGHT = 100;
+        const BALL_RADIUS = 8;
+        const BRICK_COLS = 5; // ★3列から5列に変更
+        const BRICK_ROWS = 10;
+        
+        const FEVER_REQ = 7;
+        const FEVER_DURATION = 5000;
+        const GAME_DURATION = 30; // 30秒制
+
+        let isFeverMode = false;
+        let feverTimeout;
+        let timeLeft = GAME_DURATION;
+        
+        let gameWidth = 0;
+        let gameHeight = 0;
+        
+        let matchStartTime = 0;
+        let p1TotalFever = 0;
+        let p2TotalFever = 0;
+        let currentRally = 0;
+        let maxRally = 0;
+        let maxSpeedRecord = 0;
+
+        const keys = { w: false, s: false, ArrowUp: false, ArrowDown: false };
+
+        const GAS_URL = "https://script.google.com/a/macros/t.iput.ac.jp/s/AKfycbx5uLLYr4ICncco0WRq0yBizK5bF5A_HEXw8iKL5XiIk6ZNSMzSLZ5FUvAGcXizLcGD8g/exec";
+
+        const audioContextFiles = {
+            bgm: new Audio('https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/maou_game_casino04.mp3'),
+            feverBgm: new Audio('https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/maou_game_casino01.mp3'),
+            victory: new Audio('https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/victory.mp3'),
+            paddle: new Audio('https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/tenis.mp3'),
+            brick: new Audio('https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/ダウンロード.mp3')
+        };
+        
+        audioContextFiles.bgm.loop = true;
+        audioContextFiles.bgm.volume = 0.3; 
+        audioContextFiles.feverBgm.loop = true;
+        audioContextFiles.feverBgm.volume = 0.4; 
+        audioContextFiles.victory.volume = 0.7;
+        audioContextFiles.paddle.volume = 0.8;
+        audioContextFiles.brick.volume = 0.8;
+
+        let audioStatus = { bgm: false, feverBgm: false, victory: false, paddle: false, brick: false };
+
+        Object.keys(audioContextFiles).forEach(key => {
+            audioContextFiles[key].addEventListener('canplaythrough', () => { audioStatus[key] = true; });
+            audioContextFiles[key].addEventListener('error', (e) => { audioStatus[key] = false; });
+        });
+
+        let synthCtx = null;
+        let isAudioUnlocked = false;
+
+        function unlockAudio() {
+            if (isAudioUnlocked) return;
+            if (!synthCtx) synthCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (synthCtx.state === 'suspended') synthCtx.resume();
+            Object.keys(audioContextFiles).forEach(key => {
+                const sound = audioContextFiles[key];
+                if (audioStatus[key] && sound.src) { 
+                    const playPromise = sound.play();
+                    if (playPromise !== undefined) { playPromise.then(() => { sound.pause(); sound.currentTime = 0; }).catch(e => {}); }
+                }
+            });
+            isAudioUnlocked = true;
+        }
+
+        window.addEventListener('click', unlockAudio, { once: true });
+        window.addEventListener('touchstart', unlockAudio, { once: true });
+
+        function playSynthSound(type) {
+            if (!synthCtx || synthCtx.state !== 'running') return;
+            const osc = synthCtx.createOscillator();
+            const gainNode = synthCtx.createGain();
+            osc.connect(gainNode);
+            gainNode.connect(synthCtx.destination);
+            if (type === 'paddle') {
+                osc.type = 'sine'; osc.frequency.setValueAtTime(600, synthCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(800, synthCtx.currentTime + 0.1);
+                gainNode.gain.setValueAtTime(0.5, synthCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.1);
+            } else if (type === 'brick') {
+                osc.type = 'square'; osc.frequency.setValueAtTime(300, synthCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(100, synthCtx.currentTime + 0.1);
+                gainNode.gain.setValueAtTime(0.5, synthCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, synthCtx.currentTime + 0.1);
+            }
+            osc.start(); osc.stop(synthCtx.currentTime + 0.1);
+        }
+
+        function playSound(type) {
+            const sound = audioContextFiles[type];
+            if (audioStatus[type] && sound.src && sound.readyState >= 2) {
+                sound.currentTime = 0;
+                const playPromise = sound.play();
+                if (playPromise !== undefined) { playPromise.catch(e => {}); }
+            } else { playSynthSound(type); }
+        }
+
+        function switchBGM(toFever) {
+            if (STATE !== 'PLAYING') return;
+            if (toFever) {
+                if (audioStatus.bgm && audioContextFiles.bgm.src) audioContextFiles.bgm.pause();
+                if (audioStatus.feverBgm && audioContextFiles.feverBgm.src) {
+                    audioContextFiles.feverBgm.currentTime = 0;
+                    audioContextFiles.feverBgm.play().catch(e => {});
+                }
+            } else {
+                if (audioStatus.feverBgm && audioContextFiles.feverBgm.src) audioContextFiles.feverBgm.pause();
+                if (audioStatus.bgm && audioContextFiles.bgm.src) { audioContextFiles.bgm.play().catch(e => {}); }
+            }
+        }
+
+        const brickImages = { red: new Image(), blue: new Image(), green: new Image() };
+        brickImages.red.src = 'https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/red.png';
+        brickImages.blue.src = 'https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/blue.png';
+        brickImages.green.src = 'https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/green.png';
+
+        const paddleImages = { p1: new Image(), p2: new Image() };
+        paddleImages.p1.src = 'https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/Gemini_Generated_Image_c7x98ic7x98ic7x9%20(3).png';
+        paddleImages.p2.src = 'https://cdn.jsdelivr.net/gh/tk250322/AIGameworkshop@main/Gemini_Generated_Image_nbuqwgnbuqwgnbuq%20(1).png';
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyB4Xz1Y-fd00rRaBLFeHN7j4R5KNHjLftE",
+            authDomain: "breaking-blocks-773c2.firebaseapp.com",
+            databaseURL: "https://breaking-blocks-773c2-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "breaking-blocks-773c2",
+            storageBucket: "breaking-blocks-773c2.firebasestorage.app",
+            messagingSenderId: "950939713866",
+            appId: "1:950939713866:web:6ca63e334671e5e50441b3",
+            measurementId: "G-W2L81FK3FQ"
+        };
+
+        let isFirebaseInitialized = false;
+        let db = null; let roomRef = null; let onlineRole = 'NONE'; let onlineRoomId = ''; let lastSyncTime = 0;
+
+        function showFirebaseError(msg) { const err = document.getElementById('firebase-error-text'); err.innerText = msg; err.classList.remove('hidden'); }
+        function initFirebase() {
+            if (isFirebaseInitialized) return true;
+            try { firebase.initializeApp(firebaseConfig); db = firebase.database(); isFirebaseInitialized = true; return true; } catch (e) { showFirebaseError("初期化エラー: " + e.message); return false; }
+        }
+
+        let useCameraMode = 'NONE'; let hand1PY = 0.5; let hand2PY = 0.5; let cameraInstance = null; let handsInstance = null;
+        async function startWithCamera(mode) {
+            document.getElementById('loading-camera-alert').classList.remove('hidden');
+            useCameraMode = mode;
+            try {
+                const videoElement = document.getElementById('input_video');
+                if (!handsInstance) { handsInstance = new window.Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`}); }
+                handsInstance.setOptions({ maxNumHands: mode === '2P' ? 2 : 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+                handsInstance.onResults((results) => {
+                    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                        for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                            const landmarks = results.multiHandLandmarks[i];
+                            if (useCameraMode === '2P') { if (landmarks[9].x > 0.5) hand1PY = landmarks[9].y; else hand2PY = landmarks[9].y; } else { hand1PY = landmarks[9].y; }
+                        }
+                    }
+                });
+                if (!cameraInstance) { cameraInstance = new window.Camera(videoElement, { onFrame: async () => { if (useCameraMode !== 'NONE' && handsInstance && STATE === 'PLAYING') await handsInstance.send({image: videoElement}); }, width: 320, height: 240 }); }
+                await cameraInstance.start();
+                document.getElementById('loading-camera-alert').classList.add('hidden');
+                displays.cameraArea.classList.remove('opacity-0'); displays.cameraArea.classList.add('opacity-100');
+                startGame(mode); 
+            } catch (error) { useCameraMode = 'NONE'; document.getElementById('loading-camera-alert').classList.add('hidden'); }
+        }
+
+        function cancelCamera() { useCameraMode = 'NONE'; document.getElementById('loading-camera-alert').classList.add('hidden'); displays.cameraArea.classList.remove('opacity-100'); displays.cameraArea.classList.add('opacity-0'); if(cameraInstance) cameraInstance.stop(); }
+        async function startOnlineWithCamera(callback) {
+            document.getElementById('loading-camera-alert').classList.remove('hidden');
+            useCameraMode = 'ONLINE';
+            try {
+                const videoElement = document.getElementById('input_video');
+                if (!handsInstance) { handsInstance = new window.Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`}); }
+                handsInstance.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+                handsInstance.onResults((results) => { if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) hand1PY = results.multiHandLandmarks[0][9].y; });
+                if (!cameraInstance) { cameraInstance = new window.Camera(videoElement, { onFrame: async () => { if (useCameraMode !== 'NONE' && handsInstance && STATE === 'PLAYING') await handsInstance.send({image: videoElement}); }, width: 320, height: 240 }); }
+                await cameraInstance.start();
+                document.getElementById('loading-camera-alert').classList.add('hidden');
+                displays.cameraArea.classList.remove('opacity-0'); displays.cameraArea.classList.add('opacity-100');
+                callback(); 
+            } catch (error) { useCameraMode = 'NONE'; document.getElementById('loading-camera-alert').classList.add('hidden'); callback(); }
+        }
+
+        function createRoom() {
+            if (!initFirebase()) return;
+            const useCam = document.getElementById('online-camera-toggle').checked;
+            if (useCam) startOnlineWithCamera(doCreateRoom); else { useCameraMode = 'NONE'; doCreateRoom(); }
+        }
+
+        function doCreateRoom() {
+            document.getElementById('firebase-error-text').classList.add('hidden');
+            onlineRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+            onlineRole = 'HOST'; gameMode = 'ONLINE_HOST'; roomRef = db.ref('rooms/' + onlineRoomId);
+            roomRef.set({ status: 'waiting', p1: { y: 0 }, p2: { joined: false, y: 0 } });
+            roomRef.onDisconnect().remove();
+            document.getElementById('display-room-id').innerText = onlineRoomId;
+            screens.start.classList.add('hidden'); document.getElementById('room-waiting-alert').classList.remove('hidden');
+            roomRef.child('p2/joined').on('value', snap => {
+                if (snap.val() === true) { roomRef.child('p2/joined').off(); document.getElementById('room-waiting-alert').classList.add('hidden'); initGame(); roomRef.update({ status: 'playing' }); STATE = 'PLAYING'; roomRef.child('p2/y').on('value', s => { if(p2 && s.val() !== null) p2.y = s.val(); }); gameLoop(); }
+            });
+        }
+
+        function joinRoom() {
+            if (!initFirebase()) return;
+            const inputId = document.getElementById('room-id-input').value.toUpperCase();
+            if (inputId.length !== 4) { showFirebaseError("4桁の部屋IDを入力してください。"); return; }
+            const useCam = document.getElementById('online-camera-toggle').checked;
+            if (useCam) startOnlineWithCamera(() => doJoinRoom(inputId)); else { useCameraMode = 'NONE'; doJoinRoom(inputId); }
+        }
+
+        function doJoinRoom(inputId) {
+            document.getElementById('firebase-error-text').classList.add('hidden');
+            onlineRoomId = inputId; onlineRole = 'GUEST'; gameMode = 'ONLINE_GUEST'; roomRef = db.ref('rooms/' + onlineRoomId);
+            roomRef.child('status').once('value').then(snap => {
+                if (snap.exists() && snap.val() === 'waiting') { roomRef.child('p2').update({ joined: true }); roomRef.onDisconnect().remove(); screens.start.classList.add('hidden'); initGame(); STATE = 'PLAYING'; roomRef.on('value', syncStateFromHost); gameLoop(); }
+                else { showFirebaseError("部屋が見つからないか、既に対戦中です。"); }
+            });
+        }
+
+        function cancelRoom() { if (roomRef) { roomRef.remove(); roomRef.off(); } onlineRole = 'NONE'; document.getElementById('room-waiting-alert').classList.add('hidden'); screens.start.classList.remove('hidden'); }
+
+        function syncStateFromHost(snap) {
+            const data = snap.val(); if (!data) return;
+            if (data.status === 'playing') {
+                if(data.p1 && p1) p1.y = data.p1.y;
+                if (data.balls) {
+                    for (let i = 0; i < data.balls.length; i++) {
+                        let newBall = data.balls[i];
+                        if (balls[i] && balls[i].lastHitId !== newBall.lastHitId && newBall.lastHitId !== 0) {
+                            let color = newBall.lastHitId === 1 ? '#3b82f6' : '#ef4444';
+                            if (data.isFeverMode) color = '#ff5555';
+                            createParticles(newBall.x, newBall.y, color, 'spark', 30, Math.atan2(newBall.dy, newBall.dx));
+                            createParticles(newBall.x, newBall.y, color, 'ring', 1);
+                        }
+                    }
+                    balls = data.balls.map(b => { let ball = new Ball(b.x, b.dx); ball.y = b.y; ball.dy = b.dy; ball.speed = b.speed; ball.lastHitId = b.lastHitId; return ball; });
+                } else { balls = []; }
+                if (data.brickData && bricks.length === data.brickData.length) {
+                    for(let i=0; i<bricks.length; i++) {
+                        if (bricks[i].status === 1 && data.brickData[i].s === 0) createParticles(bricks[i].x + bricks[i].width/2, bricks[i].y + bricks[i].height/2, bricks[i].color === 'red' ? '#ef4444' : bricks[i].color === 'blue' ? '#3b82f6' : '#10b981', 'brick', 40);
+                        bricks[i].status = data.brickData[i].s; bricks[i].y = data.brickData[i].y;
+                    }
+                }
+                if (data.p1Stats && data.p2Stats) { p1.score = data.p1Stats.score; p1.feverScore = data.p1Stats.feverScore; p2.score = data.p2Stats.score; p2.feverScore = data.p2Stats.feverScore; updateUI(); updateFeverUI(p1); updateFeverUI(p2); }
+                if (data.timeLeft !== undefined) { timeLeft = data.timeLeft; displays.timer.innerText = Math.max(0, Math.ceil(timeLeft)); }
+                let newFeverMode = data.isFeverMode || false;
+                if (isFeverMode !== newFeverMode) { isFeverMode = newFeverMode; if (isFeverMode) { document.body.classList.add('fever-glow'); switchBGM(true); } else { document.body.classList.remove('fever-glow'); switchBGM(false); } }
+            } else if (data.status === 'gameover' && STATE === 'PLAYING') { endGame(data.winner); }
+        }
+
+        class Particle {
+            constructor(x, y, color, type, extra) {
+                this.x = x; this.y = y; this.color = color; this.type = type; this.life = 1.0;
+                if (type === 'brick') { let angle = Math.random() * Math.PI * 2; let speed = Math.random() * 6 + 2; this.dx = Math.cos(angle) * speed; this.dy = Math.sin(angle) * speed; this.gravity = 0.3; this.decay = Math.random() * 0.03 + 0.015; this.size = Math.random() * 6 + 4; this.rot = Math.random() * Math.PI * 2; this.rotSpeed = (Math.random() - 0.5) * 0.3; }
+                else if (type === 'spark') { let baseAngle = extra || (Math.random() * Math.PI * 2); let spread = (Math.random() - 0.5) * 1.5; let speed = Math.random() * 10 + 5; this.dx = Math.cos(baseAngle + spread) * speed; this.dy = Math.sin(baseAngle + spread) * speed; this.gravity = 0; this.decay = Math.random() * 0.05 + 0.03; this.size = Math.random() * 3 + 1.5; this.rot = 0; }
+                else if (type === 'ring') { this.dx = 0; this.dy = 0; this.gravity = 0; this.decay = 0.05; this.size = 10; this.rot = 0; }
+            }
+            update() { if (this.type === 'brick') { this.dy += this.gravity; this.rot += this.rotSpeed; } else if (this.type === 'ring') { this.size += 5; } this.x += this.dx; this.y += this.dy; this.life -= this.decay; if (this.type !== 'ring') this.size *= 0.95; }
+            draw() {
+                ctx.globalAlpha = Math.max(0, this.life);
+                if (this.type === 'brick') { ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.rot); ctx.fillStyle = this.color; ctx.fillRect(-this.size/2, -this.size/2, this.size, this.size); ctx.restore(); }
+                else if (this.type === 'spark') { ctx.strokeStyle = this.color; ctx.lineWidth = this.size; ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(this.x - this.dx * 1.5, this.y - this.dy * 1.5); ctx.stroke(); }
+                else if (this.type === 'ring') { ctx.strokeStyle = this.color; ctx.lineWidth = 4 * this.life; ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.stroke(); }
+                ctx.globalAlpha = 1.0;
+            }
+        }
+        let particles = [];
+        function createParticles(x, y, color, type, count, extra = 0) { for (let i = 0; i < count; i++) particles.push(new Particle(x, y, color, type, extra)); }
+
+        class Player {
+            constructor(id, x, isCPU = false) { this.id = id; this.x = x; this.y = gameHeight / 2 - PADDLE_HEIGHT / 2; this.width = PADDLE_WIDTH; this.height = PADDLE_HEIGHT; this.isCPU = isCPU; this.score = 0; this.feverScore = 0; this.speed = 5; }
+            draw() {
+                const img = this.id === 1 ? paddleImages.p1 : paddleImages.p2;
+                ctx.shadowBlur = isFeverMode ? 15 : 10; ctx.shadowColor = isFeverMode ? '#ef4444' : (this.id === 1 ? '#3b82f6' : '#ef4444');
+                if (img.complete && img.naturalHeight !== 0) {
+                    const aspect = img.naturalWidth / img.naturalHeight; const drawHeight = this.height * 2; const drawWidth = drawHeight * aspect; const drawX = this.x + (this.width / 2) - (drawWidth / 2); const drawY = this.y;
+                    if (this.id === 2) { ctx.save(); ctx.translate(drawX + drawWidth / 2, drawY + drawHeight / 2); ctx.scale(-1, 1); ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight); ctx.restore(); } else ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+                } else { ctx.beginPath(); ctx.roundRect(this.x, this.y, this.width, this.height, 8); ctx.fillStyle = isFeverMode ? '#ef4444' : (this.id === 1 ? '#3b82f6' : '#ef4444'); ctx.fill(); ctx.closePath(); }
+                ctx.shadowBlur = 0;
+            }
+            update() {
+                if (this.isCPU) this.updateCPU();
+                else if (this.id === 1 && (useCameraMode === 'CPU' || useCameraMode === '2P' || (onlineRole === 'HOST' && useCameraMode === 'ONLINE'))) { let mappedY = Math.max(0, Math.min(1, (hand1PY - 0.2) / 0.6)); this.y += (mappedY * gameHeight - this.height / 2 - this.y) * 0.3; }
+                else if (this.id === 2 && (useCameraMode === '2P' || (onlineRole === 'GUEST' && useCameraMode === 'ONLINE'))) { let py = onlineRole === 'GUEST' ? hand1PY : hand2PY; let mappedY = Math.max(0, Math.min(1, (py - 0.2) / 0.6)); this.y += (mappedY * gameHeight - this.height / 2 - this.y) * 0.3; }
+                else { if (this.id === 1) { if (keys.w && this.y > 0) this.y -= 8; if (keys.s && this.y < gameHeight - this.height) this.y += 8; } else { if (keys.ArrowUp && this.y > 0) this.y -= 8; if (keys.ArrowDown && this.y < gameHeight - this.height) this.y += 8; } }
+                this.y = Math.max(0, Math.min(gameHeight - this.height, this.y));
+            }
+            updateCPU() { let targetBall = null; let minDist = Infinity; for (let b of balls) { if (b.dx > 0) { let dist = b.x - this.x; if (dist > 0 && dist < minDist) { minDist = dist; targetBall = b; } } } if (targetBall) { let targetY = targetBall.y - this.height / 2; if (targetY < this.y) this.y -= this.speed; else if (targetY > this.y) this.y += this.speed; } this.y = Math.max(0, Math.min(gameHeight - this.height, this.y)); }
+        }
+
+        class Ball {
+            constructor(x, dir) { this.x = x; this.y = gameHeight / 2; this.radius = BALL_RADIUS; this.speed = 6; this.dx = dir * this.speed; this.dy = (Math.random() * 4 - 2); this.lastHitId = 0; this.normalizeVelocity(); }
+            normalizeVelocity() { let len = Math.sqrt(this.dx * this.dx + this.dy * this.dy); if (len === 0) return; this.dx = (this.dx / len) * this.speed; this.dy = (this.dy / len) * this.speed; }
+            draw() { ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2); ctx.fillStyle = isFeverMode ? '#ff5555' : '#ffffff'; ctx.shadowBlur = isFeverMode ? 15 : 5; ctx.shadowColor = isFeverMode ? '#ff0000' : '#ffffff'; ctx.fill(); ctx.closePath(); ctx.shadowBlur = 0; }
+            update() {
+                this.x += this.dx; this.y += this.dy;
+                if (this.y - this.radius < 0) { this.y = this.radius; this.dy *= -1; } else if (this.y + this.radius > gameHeight) { this.y = gameHeight - this.radius; this.dy *= -1; }
+                this.checkPaddleCollision(p1); this.checkPaddleCollision(p2); this.checkBrickCollision();
+                if (this.speed > maxSpeedRecord) maxSpeedRecord = this.speed;
+            }
+            checkPaddleCollision(paddle) {
+                if (this.x + this.radius > paddle.x && this.x - this.radius < paddle.x + paddle.width && this.y + this.radius > paddle.y && this.y - this.radius < paddle.y + paddle.height) {
+                    playSound('paddle'); this.lastHitId = paddle.id; currentRally++; if(currentRally > maxRally) maxRally = currentRally;
+                    let angle = (this.y - (paddle.y + paddle.height / 2)) / (paddle.height / 2) * (Math.PI / 4);
+                    let dir = paddle.id === 1 ? 1 : -1; if (this.speed < 15) this.speed += 0.2;
+                    this.dx = dir * this.speed * Math.cos(angle); this.dy = this.speed * Math.sin(angle);
+                    let color = isFeverMode ? '#ff5555' : (paddle.id === 1 ? '#3b82f6' : '#ef4444');
+                    createParticles(this.x, this.y, color, 'spark', 30, Math.atan2(this.dy, this.dx)); createParticles(this.x, this.y, color, 'ring', 1);
+                    if (paddle.id === 1) this.x = paddle.x + paddle.width + this.radius; else this.x = paddle.x - this.radius;
+                }
+            }
+            checkBrickCollision() {
+                for (let i = 0; i < bricks.length; i++) {
+                    let b = bricks[i]; if (b.status === 1 && this.x + this.radius > b.x && this.x - this.radius < b.x + b.width && this.y + this.radius > b.y && this.y - this.radius < b.y + b.height) {
+                        playSound('brick'); createParticles(b.x + b.width / 2, b.y + b.height / 2, b.color === 'red' ? '#ef4444' : b.color === 'blue' ? '#3b82f6' : '#10b981', 'brick', 40);
+                        this.dx *= -1; b.status = 0; if (this.lastHitId !== 0) { let pl = this.lastHitId === 1 ? p1 : p2; pl.score += 1; pl.feverScore++; updateFeverUI(pl); updateUI(); if (!isFeverMode && pl.feverScore >= FEVER_REQ) triggerFever(pl); } break;
+                    }
+                }
+            }
+        }
+
+        function createBricks() {
+            bricks = []; const brickWidth = 20, brickHeight = 40, padding = 10, offsetLeft = gameWidth / 2 - ((BRICK_COLS * (brickWidth + padding)) / 2), offsetTop = gameHeight / 2 - ((BRICK_ROWS * (brickHeight + padding)) / 2), colors = ['red', 'blue', 'green'];
+            for (let c = 0; c < BRICK_COLS; c++) { let speedY = (Math.random() * 2 + 1) * (Math.random() > 0.5 ? 1 : -1); for (let r = 0; r < BRICK_ROWS; r++) bricks.push({ x: offsetLeft + c * (brickWidth + padding), y: offsetTop + r * (brickHeight + padding), width: brickWidth, height: brickHeight, status: 1, color: colors[(r + c) % colors.length], dy: speedY, col: c }); }
+        }
+
+        function updateFeverUI(player) { const bar = player.id === 1 ? displays.p1Fever : displays.p2Fever; let ratio = Math.min(100, (player.feverScore / FEVER_REQ) * 100); bar.style.width = `${ratio}%`; }
+        function triggerFever(player) {
+            isFeverMode = true; player.feverScore = 0; updateFeverUI(player); if (player.id === 1) p1TotalFever++; else p2TotalFever++; switchBGM(true);
+            displays.feverPopup.classList.remove('hidden'); displays.feverPopup.classList.remove('popup-anim'); void displays.feverPopup.offsetWidth; displays.feverPopup.classList.add('popup-anim');
+            document.body.classList.add('fever-glow'); const sourceBalls = [...balls];
+            sourceBalls.forEach(b => { let dir = player.id === 1 ? 1 : -1; let b2 = new Ball(b.x, dir); b2.y = b.y; b2.dx = b.dx; b2.dy = b.dy + 2; b2.speed = b.speed; b2.lastHitId = player.id; b2.normalizeVelocity(); let b3 = new Ball(b.x, dir); b3.y = b.y; b3.dx = b.dx; b3.dy = b.dy - 2; b3.speed = b.speed; b3.lastHitId = player.id; b3.normalizeVelocity(); balls.push(b2, b3); });
+            clearTimeout(feverTimeout); feverTimeout = setTimeout(() => { isFeverMode = false; switchBGM(false); displays.feverPopup.classList.add('hidden'); document.body.classList.remove('fever-glow'); }, FEVER_DURATION);
+        }
+
+        function updateUI() { displays.p1Score.innerText = p1.score; displays.p2Score.innerText = p2.score; displays.timer.innerText = Math.max(0, Math.ceil(timeLeft)); }
+        function checkWinCondition() { let winnerId = p1.score > p2.score ? 1 : p1.score < p2.score ? 2 : 3; if (onlineRole === 'HOST') roomRef.update({ status: 'gameover', winner: winnerId }); endGame(winnerId); }
+        function replenishBricksIfNeeded() { if (bricks.filter(b => b.status === 1).length === 0) createBricks(); }
+
+        function resizeCanvas() { const main = document.querySelector('main'); gameWidth = main.clientWidth; gameHeight = main.clientHeight; const dpr = window.devicePixelRatio || 1; canvas.width = gameWidth * dpr; canvas.height = gameHeight * dpr; canvas.style.width = `${gameWidth}px`; canvas.style.height = `${gameHeight}px`; ctx.scale(dpr, dpr); ctx.imageSmoothingEnabled = true; }
+        function initGame() {
+            resizeCanvas(); p1 = new Player(1, 30, false); p2 = new Player(2, gameWidth - 30 - PADDLE_WIDTH, gameMode === 'CPU'); balls = [new Ball(p1.x + p1.width + 10, 1), new Ball(p2.x - 10, -1)]; createBricks(); particles = []; p1.score = 0; p2.score = 0; p1.feverScore = 0; p2.feverScore = 0; isFeverMode = false; matchStartTime = Date.now(); timeLeft = GAME_DURATION; p1TotalFever = 0; p2TotalFever = 0; currentRally = 0; maxRally = 0; maxSpeedRecord = 0; updateUI(); updateFeverUI(p1); updateFeverUI(p2); document.body.classList.remove('fever-glow');
+        }
+
+        function sendPlayData(winnerId) {
+            if (!GAS_URL || GAS_URL.includes("YOUR_GAS_WEB_APP")) return;
+            const playTimeSec = Math.floor((Date.now() - matchStartTime) / 1000);
+            let winnerStr = winnerId === 1 ? '1P' : winnerId === 2 ? ((gameMode === '2P' || gameMode.includes('ONLINE')) ? '2P' : 'CPU') : 'DRAW';
+            const data = {
+                gameMode, winner: winnerStr, p1Score: p1.score, p2Score: p2.score,
+                limitTime: GAME_DURATION, 
+                playTime: playTimeSec, p1FeverCount: p1TotalFever, p2FeverCount: p2TotalFever,
+                maxRally, maxSpeed: Math.round(maxSpeedRecord * 10) / 10, deviceType: /iPhone|iPad|Android/i.test(navigator.userAgent) ? 'Mobile' : 'PC'
+            };
+            fetch(GAS_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(data) }).catch(() => {});
+        }
+
+        function startGame(mode) {
+            gameMode = mode; STATE = 'PLAYING'; screens.start.classList.add('hidden'); if (useCameraMode === 'NONE') cancelCamera(); displays.p2Name.innerText = mode === '2P' ? '2P' : 'CPU';
+            if (audioStatus.bgm) { audioContextFiles.bgm.currentTime = 0; audioContextFiles.bgm.play().catch(() => {}); }
+            if (audioStatus.feverBgm) { audioContextFiles.feverBgm.pause(); audioContextFiles.feverBgm.currentTime = 0; }
+            if (audioStatus.victory) { audioContextFiles.victory.pause(); audioContextFiles.victory.currentTime = 0; }
+            initGame(); gameLoop();
+        }
+
+        function endGame(winnerId) {
+            STATE = 'GAMEOVER'; cancelAnimationFrame(animationId);
+            if (audioStatus.bgm) audioContextFiles.bgm.pause(); if (audioStatus.feverBgm) audioContextFiles.feverBgm.pause();
+            if (audioStatus.victory) { audioContextFiles.victory.currentTime = 0; audioContextFiles.victory.play().catch(() => {}); }
+            const wText = displays.winnerText;
+            if (winnerId === 1) { wText.textContent = "1P WINS!"; wText.className = "text-6xl md:text-7xl font-black italic mb-2 tracking-tighter drop-shadow-2xl text-center text-blue-400"; }
+            else if (winnerId === 2) { wText.textContent = (gameMode === '2P' || gameMode.includes('ONLINE')) ? "2P WINS!" : "CPU WINS!"; wText.className = "text-6xl md:text-7xl font-black italic mb-2 tracking-tighter drop-shadow-2xl text-center text-red-400"; }
+            else { wText.textContent = "DRAW!"; wText.className = "text-6xl md:text-7xl font-black italic mb-2 tracking-tighter drop-shadow-2xl text-center text-gray-400"; }
+            displays.p1Score.innerText = p1.score; displays.p2Score.innerText = p2.score;
+            document.getElementById('stat-p1-score').innerText = p1.score; document.getElementById('stat-p2-score').innerText = p2.score;
+            if(screens.gameOver) screens.gameOver.classList.remove('hidden'); sendPlayData(winnerId);
+        }
+
+        function resetGame() { STATE = 'START'; if(screens.gameOver) screens.gameOver.classList.add('hidden'); screens.start.classList.remove('hidden'); cancelCamera(); Object.values(audioContextFiles).forEach(s => { s.pause(); s.currentTime = 0; }); if (onlineRole !== 'NONE' && roomRef) { roomRef.remove(); roomRef.off(); onlineRole = 'NONE'; } }
+
+        function gameLoop() {
+            if (STATE !== 'PLAYING') return;
+            if (onlineRole !== 'GUEST') { timeLeft = GAME_DURATION - (Date.now() - matchStartTime) / 1000; if (timeLeft <= 0) { timeLeft = 0; checkWinCondition(); updateUI(); return; } }
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.4)'; ctx.fillRect(0, 0, gameWidth, gameHeight);
+            ctx.setLineDash([10, 15]); ctx.beginPath(); ctx.moveTo(gameWidth/2, 0); ctx.lineTo(gameWidth/2, gameHeight); ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.stroke(); ctx.setLineDash([]);
+            if (onlineRole === 'HOST') {
+                p1.update(); updatePhysics(); const now = Date.now(); if (now - lastSyncTime > 30) { roomRef.update({ p1: { y: p1.y }, balls: balls.map(b => ({x:b.x, y:b.y, dx:b.dx, dy:b.dy, speed:b.speed, lastHitId:b.lastHitId})), brickData: bricks.map(b => ({ s: b.status, y: b.y })), timeLeft, isFeverMode, p1Stats: { score: p1.score, feverScore: p1.feverScore }, p2Stats: { score: p2.score, feverScore: p2.feverScore } }); lastSyncTime = now; }
+            } else if (onlineRole === 'GUEST') { p2.update(); if (Date.now() - lastSyncTime > 30) { roomRef.child('p2').update({ y: p2.y }); lastSyncTime = Date.now(); } } else { p1.update(); p2.update(); updatePhysics(); }
+            p1.draw(); p2.draw(); updateUI();
+            ctx.shadowBlur = 5; for (let b of bricks) { if (b.status === 1) { if (isFeverMode) { ctx.fillStyle = '#ef4444'; ctx.shadowColor = '#ef4444'; ctx.fillRect(b.x, b.y, b.width, b.height); } else { const img = brickImages[b.color]; if (img.complete && img.naturalHeight !== 0) { ctx.shadowColor = 'transparent'; ctx.drawImage(img, b.x, b.y, b.width, b.height); } else { ctx.fillStyle = b.color === 'red' ? '#ef4444' : b.color === 'blue' ? '#3b82f6' : '#10b981'; ctx.fillRect(b.x, b.y, b.width, b.height); } } } } ctx.shadowBlur = 0;
+            for (let b of balls) b.draw(); for (let i = particles.length - 1; i >= 0; i--) { particles[i].update(); particles[i].draw(); if (particles[i].life <= 0) particles.splice(i, 1); }
+            if (STATE === 'PLAYING') animationId = requestAnimationFrame(gameLoop);
+        }
+
+        function updatePhysics() {
+            for (let b of bricks) { b.y += b.dy; if (b.dy > 0 && b.y > gameHeight) b.y = -b.height; else if (b.dy < 0 && b.y + b.height < 0) b.y = gameHeight; }
+            for (let i = balls.length - 1; i >= 0; i--) {
+                let b = balls[i]; b.update();
+                if (b.x < 0) { balls.splice(i, 1); p2.score += 5; currentRally = 0; if(STATE === 'PLAYING') balls.push(new Ball(p1.x + p1.width + 10, 1)); }
+                else if (b.x > gameWidth) { balls.splice(i, 1); p1.score += 5; currentRally = 0; if(STATE === 'PLAYING') balls.push(new Ball(p2.x - 10, -1)); }
+            }
+            replenishBricksIfNeeded();
+        }
+
+        window.addEventListener('keydown', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = true; }); window.addEventListener('keyup', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = false; });
+        function handleTouch(e) {
+            if (STATE !== 'PLAYING') return; e.preventDefault(); const rect = canvas.getBoundingClientRect();
+            for (let i = 0; i < e.touches.length; i++) {
+                const touch = e.touches[i], touchY = touch.clientY - rect.top, touchX = touch.clientX - rect.left;
+                if (touchX < gameWidth / 2 && useCameraMode === 'NONE' && onlineRole !== 'GUEST') p1.y = touchY - p1.height / 2;
+                else if (touchX >= gameWidth / 2 && useCameraMode !== '2P' && !p2.isCPU && onlineRole !== 'HOST') p2.y = touchY - p2.height / 2;
+            }
+        }
+        canvas.addEventListener('touchstart', handleTouch, { passive: false }); canvas.addEventListener('touchmove', handleTouch, { passive: false });
+    </script>
+</body>
+</html>
